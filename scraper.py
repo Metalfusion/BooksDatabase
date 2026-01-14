@@ -5,9 +5,10 @@ Kirja.fi Books Scraper - Async implementation with retry logic and parallelism c
 import asyncio
 import json
 import logging
+import re
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
 from datetime import datetime
 
@@ -72,7 +73,7 @@ class KirjaFiScraper:
             'User-Agent': config.USER_AGENT,
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9,fi;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept-Encoding': 'gzip, deflate',
             'DNT': '1',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
@@ -216,13 +217,79 @@ class KirjaFiScraper:
                 
                 return True
     
-    def parse_html_metadata(self, html: str) -> Dict[str, str]:
+    def parse_html_metadata(self, html: str) -> Dict[str, Any]:
         """Parse metadata from product page HTML.
         
         Extracts fields like avainsanat, kirjastoluokka, aiheet from the
         'Lisätiedot' (Additional Information) accordion section.
         """
-        metadata = {}
+        def clean_text(text: str) -> str:
+            text = text.replace('\u00a0', ' ')
+            text = re.sub(r"\s+", " ", text).strip()
+            return text
+
+        def split_items(text: str) -> List[str]:
+            # Common separators seen on kirja.fi product pages
+            text = clean_text(text)
+            if not text:
+                return []
+
+            # Normalize separator variants
+            text = text.replace('·', '•')
+
+            # Prefer bullet separator when present
+            if '•' in text:
+                parts = [clean_text(p) for p in re.split(r"\s*•\s*", text) if clean_text(p)]
+                return parts
+
+            # If we used a custom separator in get_text
+            if '|' in text:
+                parts = [clean_text(p) for p in text.split('|') if clean_text(p)]
+                return parts
+
+            return [text]
+
+        def extract_list(dd) -> List[str]:
+            # Prefer explicit items if present
+            li_items = [clean_text(li.get_text(" ", strip=True)) for li in dd.find_all('li')]
+            li_items = [i for i in li_items if i]
+            if len(li_items) > 1:
+                return li_items
+
+            a_items = [clean_text(a.get_text(" ", strip=True)) for a in dd.find_all('a')]
+            a_items = [i for i in a_items if i]
+            if len(a_items) > 1:
+                return a_items
+
+            # Fall back to text, but keep structural separators
+            text = dd.get_text(separator=' | ', strip=True)
+            return split_items(text)
+
+        def parse_int(text: str) -> Optional[int]:
+            m = re.search(r"(\d+)", text)
+            if not m:
+                return None
+            try:
+                return int(m.group(1))
+            except ValueError:
+                return None
+
+        def parse_dimensions_mm(text: str) -> Optional[List[int]]:
+            # Example: "147 mm × 222 mm × 35 mm" (line breaks possible)
+            text = clean_text(text).replace('×', 'x')
+            nums = re.findall(r"(\d+(?:[\.,]\d+)?)", text)
+            if len(nums) < 2:
+                return None
+            values: List[int] = []
+            for n in nums[:3]:
+                n = n.replace(',', '.')
+                try:
+                    values.append(int(round(float(n))))
+                except ValueError:
+                    return None
+            return values
+
+        metadata: Dict[str, Any] = {}
         
         try:
             soup = BeautifulSoup(html, 'html.parser')
@@ -232,19 +299,37 @@ class KirjaFiScraper:
                 dd = dt.find_next_sibling('dd')
                 if dd:
                     key = dt.get_text(strip=True)
-                    value = dd.get_text(strip=True)
-                    
+
                     # Only store fields we're interested in
-                    if key in config.HTML_METADATA_FIELDS:
-                        metadata[key] = value
-                        logger.debug(f"Extracted metadata: {key} = {value[:50]}...")
+                    if key not in config.HTML_METADATA_FIELDS:
+                        continue
+
+                    if key in ('Avainsanat', 'Aiheet'):
+                        value = extract_list(dd)
+                    else:
+                        value = clean_text(dd.get_text(separator=' ', strip=True))
+
+                    if key == 'Sivumäärä':
+                        parsed = parse_int(str(value))
+                        value = parsed if parsed is not None else value
+                    elif key == 'Paino':
+                        parsed = parse_int(str(value))
+                        value = parsed if parsed is not None else value
+                    elif key == 'Mitat':
+                        dims = parse_dimensions_mm(str(value))
+                        value = dims if dims is not None else value
+
+                    metadata[key] = value
+
+                    preview = str(value)
+                    logger.debug(f"Extracted metadata: {key} = {preview[:50]}...")
             
         except Exception as e:
             logger.error(f"Error parsing HTML metadata: {e}")
         
         return metadata
     
-    async def fetch_product_metadata(self, handle: str) -> Dict[str, str]:
+    async def fetch_product_metadata(self, handle: str) -> Dict[str, Any]:
         """Fetch and parse HTML metadata for a product."""
         if not config.FETCH_HTML_METADATA:
             return {}
@@ -302,7 +387,7 @@ class KirjaFiScraper:
         logger.info(f"Total products fetched: {len(all_products)}")
         return all_products
     
-    async def save_book_data(self, product: Dict, html_metadata: Dict[str, str] = None) -> bool:
+    async def save_book_data(self, product: Dict, html_metadata: Dict[str, Any] = None) -> bool:
         """Save book data to JSON file."""
         try:
             handle = product.get('handle', '')

@@ -53,6 +53,19 @@ class ReportGenerator:
         variants = book.get('variants', [])
         variant = variants[0] if variants else {}
         html_metadata = book.get('_html_metadata', {})
+
+        def format_value(value) -> str:
+            if value is None:
+                return ''
+            if isinstance(value, str):
+                return value
+            if isinstance(value, (int, float, bool)):
+                return str(value)
+            if isinstance(value, list):
+                return ', '.join(str(v) for v in value if v is not None)
+            if isinstance(value, dict):
+                return ', '.join(str(v) for v in value.values() if v is not None)
+            return str(value)
         
         title = book.get('title', 'Unknown Title')
         isbn = variant.get('sku', 'N/A')
@@ -71,16 +84,19 @@ class ReportGenerator:
         # HTML Metadata fields (if available)
         if html_metadata:
             keywords = html_metadata.get('keywords', '')
-            if keywords:
-                card.append(f"**Keywords:** {keywords}  ")
+            keywords_text = format_value(keywords)
+            if keywords_text:
+                card.append(f"**Keywords:** {keywords_text}  ")
             
             topics = html_metadata.get('topics', '')
-            if topics:
-                card.append(f"**Topics:** {topics}  ")
+            topics_text = format_value(topics)
+            if topics_text:
+                card.append(f"**Topics:** {topics_text}  ")
             
             lib_class = html_metadata.get('library_classification', '')
-            if lib_class:
-                card.append(f"**Classification:** {lib_class}  ")
+            lib_class_text = format_value(lib_class)
+            if lib_class_text:
+                card.append(f"**Classification:** {lib_class_text}  ")
         
         # Tags (what the book is about)
         tags = book.get('tags', [])
@@ -114,16 +130,19 @@ class ReportGenerator:
         
         if html_metadata:
             page_count = html_metadata.get('page_count', '')
-            if page_count:
-                details.append(f"**Pages:** {page_count}")
+            page_count_text = format_value(page_count)
+            if page_count_text:
+                details.append(f"**Pages:** {page_count_text}")
             
             binding = html_metadata.get('binding', '')
-            if binding:
-                details.append(f"**Binding:** {binding}")
+            binding_text = format_value(binding)
+            if binding_text:
+                details.append(f"**Binding:** {binding_text}")
             
             pub_date = html_metadata.get('publication_date', '')
-            if pub_date:
-                details.append(f"**Published:** {pub_date}")
+            pub_date_text = format_value(pub_date)
+            if pub_date_text:
+                details.append(f"**Published:** {pub_date_text}")
         
         card.append(' | '.join(details) + '  ')
         

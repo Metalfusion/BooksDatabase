@@ -89,6 +89,19 @@ class BookSearcher:
         query_words = query_lower.split()
         
         results_with_scores = []
+
+        def value_to_text(value) -> str:
+            if value is None:
+                return ''
+            if isinstance(value, str):
+                return value
+            if isinstance(value, (int, float, bool)):
+                return str(value)
+            if isinstance(value, list):
+                return ' '.join(str(v) for v in value if v is not None)
+            if isinstance(value, dict):
+                return ' '.join(str(v) for v in value.values() if v is not None)
+            return str(value)
         
         for book in books:
             score = 0
@@ -107,30 +120,33 @@ class BookSearcher:
             
             # Keywords (avainsanat)
             keywords = html_metadata.get('keywords', '')
-            if keywords:
-                keywords_lower = keywords.lower()
+            keywords_text = value_to_text(keywords)
+            if keywords_text:
+                keywords_lower = keywords_text.lower()
                 keyword_matches = sum(1 for word in query_words if word in keywords_lower)
                 if keyword_matches > 0:
                     score += keyword_matches * 8
-                    match_reasons.append(f'keywords: {keywords}')
+                    match_reasons.append(f'keywords: {keywords_text}')
             
             # Topics (aiheet)
             topics = html_metadata.get('topics', '')
-            if topics:
-                topics_lower = topics.lower()
+            topics_text = value_to_text(topics)
+            if topics_text:
+                topics_lower = topics_text.lower()
                 topic_matches = sum(1 for word in query_words if word in topics_lower)
                 if topic_matches > 0:
                     score += topic_matches * 7
-                    match_reasons.append(f'topics: {topics}')
+                    match_reasons.append(f'topics: {topics_text}')
             
             # Library classification (kirjastoluokka)
             lib_class = html_metadata.get('library_classification', '')
-            if lib_class:
-                lib_class_lower = lib_class.lower()
+            lib_class_text = value_to_text(lib_class)
+            if lib_class_text:
+                lib_class_lower = lib_class_text.lower()
                 class_matches = sum(1 for word in query_words if word in lib_class_lower)
                 if class_matches > 0:
                     score += class_matches * 6
-                    match_reasons.append(f'classification: {lib_class}')
+                    match_reasons.append(f'classification: {lib_class_text}')
             
             # Check tags (medium weight)
             tags = book.get('tags', [])
@@ -269,6 +285,20 @@ class BookSearcher:
         if self.embeddings is None:
             print("Creating embeddings for books...")
             book_texts = []
+
+            def value_to_text(value) -> str:
+                if value is None:
+                    return ''
+                if isinstance(value, str):
+                    return value
+                if isinstance(value, (int, float, bool)):
+                    return str(value)
+                if isinstance(value, list):
+                    return ' '.join(str(v) for v in value if v is not None)
+                if isinstance(value, dict):
+                    return ' '.join(str(v) for v in value.values() if v is not None)
+                return str(value)
+
             for book in books:
                 # Prioritize description and tags for content-based search
                 title = book.get('title', '')
@@ -279,9 +309,9 @@ class BookSearcher:
                 
                 # Include HTML metadata for richer semantic search
                 html_metadata = book.get('_html_metadata', {})
-                keywords = html_metadata.get('keywords', '')
-                topics = html_metadata.get('topics', '')
-                lib_class = html_metadata.get('library_classification', '')
+                keywords = value_to_text(html_metadata.get('keywords', ''))
+                topics = value_to_text(html_metadata.get('topics', ''))
+                lib_class = value_to_text(html_metadata.get('library_classification', ''))
                 
                 # Weight: description (most important), keywords, topics, tags, classification, then title
                 tag_text = ' '.join(tags)
