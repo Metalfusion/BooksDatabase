@@ -458,8 +458,7 @@ class KirjaFiScraper:
         
         try:
             # Fetch all products
-            TEST_LIMIT = 1000
-            products = await self.fetch_all_products(limit=TEST_LIMIT)
+            products = await self.fetch_all_products(limit=config.TEST_LIMIT)
             
             if not products:
                 logger.warning("No products found!")

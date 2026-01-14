@@ -11,6 +11,9 @@ REQUEST_DELAY = 0.05  # Delay between requests in seconds (only for collection p
 HTML_REQUEST_DELAY = 0.1  # Delay between HTML requests (higher to avoid 429 errors)
 SEMAPHORE_LIMIT = 20  # Maximum concurrent operations
 
+# Testing Settings
+TEST_LIMIT = None  # Limit number of products to fetch (None for no limit)
+
 # Retry Settings
 MAX_RETRIES = 3
 RETRY_WAIT_MIN = 2  # Minimum wait time for retry (seconds)
