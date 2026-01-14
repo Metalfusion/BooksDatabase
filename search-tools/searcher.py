@@ -100,9 +100,37 @@ class BookSearcher:
             desc_matches = sum(1 for word in query_words if word in desc_lower)
             if desc_matches > 0:
                 score += desc_matches * 10
-                # Extract relevant snippet
-                desc_clean = re.sub('<[^<]+?>', '', desc).strip()
                 match_reasons.append('description')
+            
+            # Check HTML metadata fields (high weight)
+            html_metadata = book.get('_html_metadata', {})
+            
+            # Keywords (avainsanat)
+            keywords = html_metadata.get('keywords', '')
+            if keywords:
+                keywords_lower = keywords.lower()
+                keyword_matches = sum(1 for word in query_words if word in keywords_lower)
+                if keyword_matches > 0:
+                    score += keyword_matches * 8
+                    match_reasons.append(f'keywords: {keywords}')
+            
+            # Topics (aiheet)
+            topics = html_metadata.get('topics', '')
+            if topics:
+                topics_lower = topics.lower()
+                topic_matches = sum(1 for word in query_words if word in topics_lower)
+                if topic_matches > 0:
+                    score += topic_matches * 7
+                    match_reasons.append(f'topics: {topics}')
+            
+            # Library classification (kirjastoluokka)
+            lib_class = html_metadata.get('library_classification', '')
+            if lib_class:
+                lib_class_lower = lib_class.lower()
+                class_matches = sum(1 for word in query_words if word in lib_class_lower)
+                if class_matches > 0:
+                    score += class_matches * 6
+                    match_reasons.append(f'classification: {lib_class}')
             
             # Check tags (medium weight)
             tags = book.get('tags', [])
@@ -249,10 +277,16 @@ class BookSearcher:
                 desc_clean = re.sub('<[^<]+?>', '', desc)
                 tags = book.get('tags', [])
                 
-                # Weight: description (most important), tags, then title
-                # Include description twice for higher weight
+                # Include HTML metadata for richer semantic search
+                html_metadata = book.get('_html_metadata', {})
+                keywords = html_metadata.get('keywords', '')
+                topics = html_metadata.get('topics', '')
+                lib_class = html_metadata.get('library_classification', '')
+                
+                # Weight: description (most important), keywords, topics, tags, classification, then title
                 tag_text = ' '.join(tags)
-                text = f"{desc_clean} {tag_text} {title}"
+                metadata_text = f"{keywords} {topics} {lib_class}"
+                text = f"{desc_clean} {metadata_text} {tag_text} {title}"
                 book_texts.append(text)
             
             self.embeddings = self.embedding_model.encode(book_texts, show_progress_bar=True)
@@ -319,8 +353,9 @@ class BookSearcher:
         """Extract key details from a book."""
         variants = book.get('variants', [])
         variant = variants[0] if variants else {}
+        html_metadata = book.get('_html_metadata', {})
         
-        return {
+        details = {
             'title': book.get('title', 'N/A'),
             'isbn': variant.get('sku', 'N/A'),
             'price': variant.get('price', 'N/A'),
@@ -332,3 +367,16 @@ class BookSearcher:
             'url': book.get('_metadata', {}).get('product_url', 'N/A'),
             'images': book.get('images', [])
         }
+        
+        # Add HTML metadata if available
+        if html_metadata:
+            details['keywords'] = html_metadata.get('keywords', 'N/A')
+            details['topics'] = html_metadata.get('topics', 'N/A')
+            details['library_classification'] = html_metadata.get('library_classification', 'N/A')
+            details['binding'] = html_metadata.get('binding', 'N/A')
+            details['page_count'] = html_metadata.get('page_count', 'N/A')
+            details['publication_date'] = html_metadata.get('publication_date', 'N/A')
+            details['dimensions'] = html_metadata.get('dimensions', 'N/A')
+            details['weight'] = html_metadata.get('weight', 'N/A')
+        
+        return details

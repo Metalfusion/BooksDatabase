@@ -13,6 +13,7 @@ from datetime import datetime
 
 import aiohttp
 import aiofiles
+from bs4 import BeautifulSoup
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -47,10 +48,13 @@ class KirjaFiScraper:
     def __init__(self):
         self.session: Optional[aiohttp.ClientSession] = None
         self.semaphore = asyncio.Semaphore(config.SEMAPHORE_LIMIT)
+        self.rate_limit_delay = config.HTML_REQUEST_DELAY  # Adaptive delay for HTML requests
+        self.rate_limit_hits = 0  # Track consecutive 429 errors
         self.stats = {
             'books_fetched': 0,
             'images_downloaded': 0,
             'errors': 0,
+            'rate_limit_429': 0,
             'start_time': None,
             'end_time': None
         }
@@ -62,9 +66,26 @@ class KirjaFiScraper:
     async def __aenter__(self):
         """Async context manager entry."""
         timeout = aiohttp.ClientTimeout(total=config.REQUEST_TIMEOUT)
+        
+        # Browser-like headers to avoid aggressive rate limiting
+        headers = {
+            'User-Agent': config.USER_AGENT,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9,fi;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+        }
+        
         self.session = aiohttp.ClientSession(
             timeout=timeout,
-            headers={'User-Agent': config.USER_AGENT}
+            headers=headers
         )
         return self
     
@@ -73,22 +94,104 @@ class KirjaFiScraper:
         if self.session:
             await self.session.close()
     
-    @retry(
-        stop=stop_after_attempt(config.MAX_RETRIES),
-        wait=wait_exponential(min=config.RETRY_WAIT_MIN, max=config.RETRY_WAIT_MAX),
-        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
-        reraise=True
-    )
     async def fetch_json(self, url: str, with_delay: bool = True) -> Dict:
-        """Fetch JSON data from URL with retry logic."""
-        async with self.semaphore:
-            if with_delay:
-                await asyncio.sleep(config.REQUEST_DELAY)
-            
-            logger.debug(f"Fetching: {url}")
-            async with self.session.get(url) as response:
-                response.raise_for_status()
-                return await response.json()
+        """Fetch JSON data from URL with adaptive rate limiting."""
+        max_retries = config.MAX_RETRIES + 2  # Extra retries for 429 errors
+        
+        for attempt in range(max_retries):
+            try:
+                async with self.semaphore:
+                    if with_delay:
+                        await asyncio.sleep(self.rate_limit_delay)
+                    
+                    logger.debug(f"Fetching JSON: {url} (delay: {self.rate_limit_delay:.2f}s)")
+                    async with self.session.get(url) as response:
+                        if response.status == 429:
+                            # Rate limit hit - increase delay exponentially
+                            self.rate_limit_hits += 1
+                            self.rate_limit_delay = min(self.rate_limit_delay * 2, 10.0)
+                            self.stats['rate_limit_429'] += 1
+                            
+                            retry_after = response.headers.get('Retry-After')
+                            wait_time = float(retry_after) if retry_after else self.rate_limit_delay * (attempt + 1)
+                            
+                            logger.warning(
+                                f"Rate limit hit (429) for {url}. "
+                                f"Waiting {wait_time:.1f}s before retry {attempt + 1}/{max_retries}. "
+                                f"New base delay: {self.rate_limit_delay:.2f}s"
+                            )
+                            await asyncio.sleep(wait_time)
+                            continue
+                        
+                        response.raise_for_status()
+                        
+                        # Success - gradually reduce delay if we haven't hit limits recently
+                        if self.rate_limit_hits > 0:
+                            self.rate_limit_hits = max(0, self.rate_limit_hits - 1)
+                            if self.rate_limit_hits == 0:
+                                self.rate_limit_delay = max(config.HTML_REQUEST_DELAY, self.rate_limit_delay * 0.8)
+                        
+                        return await response.json()
+                        
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                if attempt < max_retries - 1:
+                    wait_time = config.RETRY_WAIT_MIN * (2 ** attempt)
+                    logger.warning(f"Error fetching {url}: {e}. Retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise
+        
+        raise aiohttp.ClientError(f"Failed to fetch {url} after {max_retries} attempts")
+    
+    async def fetch_html(self, url: str, with_delay: bool = True) -> str:
+        """Fetch HTML content from URL with adaptive rate limiting."""
+        max_retries = config.MAX_RETRIES + 2  # Extra retries for 429 errors
+        
+        for attempt in range(max_retries):
+            try:
+                async with self.semaphore:
+                    if with_delay:
+                        # Use adaptive delay that increases with 429 hits
+                        await asyncio.sleep(self.rate_limit_delay)
+                    
+                    logger.debug(f"Fetching HTML: {url} (delay: {self.rate_limit_delay:.2f}s)")
+                    async with self.session.get(url) as response:
+                        if response.status == 429:
+                            # Rate limit hit - increase delay exponentially
+                            self.rate_limit_hits += 1
+                            self.rate_limit_delay = min(self.rate_limit_delay * 2, 10.0)
+                            self.stats['rate_limit_429'] += 1
+                            
+                            retry_after = response.headers.get('Retry-After')
+                            wait_time = float(retry_after) if retry_after else self.rate_limit_delay * (attempt + 1)
+                            
+                            logger.warning(
+                                f"Rate limit hit (429) for {url}. "
+                                f"Waiting {wait_time:.1f}s before retry {attempt + 1}/{max_retries}. "
+                                f"New base delay: {self.rate_limit_delay:.2f}s"
+                            )
+                            await asyncio.sleep(wait_time)
+                            continue
+                        
+                        response.raise_for_status()
+                        
+                        # Success - gradually reduce delay if we haven't hit limits recently
+                        if self.rate_limit_hits > 0:
+                            self.rate_limit_hits = max(0, self.rate_limit_hits - 1)
+                            if self.rate_limit_hits == 0:
+                                self.rate_limit_delay = max(config.HTML_REQUEST_DELAY, self.rate_limit_delay * 0.8)
+                        
+                        return await response.text()
+                        
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                if attempt < max_retries - 1:
+                    wait_time = config.RETRY_WAIT_MIN * (2 ** attempt)
+                    logger.warning(f"Error fetching {url}: {e}. Retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise
+        
+        raise aiohttp.ClientError(f"Failed to fetch {url} after {max_retries} attempts")
     
     @retry(
         stop=stop_after_attempt(config.MAX_RETRIES),
@@ -112,6 +215,48 @@ class KirjaFiScraper:
                     await f.write(content)
                 
                 return True
+    
+    def parse_html_metadata(self, html: str) -> Dict[str, str]:
+        """Parse metadata from product page HTML.
+        
+        Extracts fields like avainsanat, kirjastoluokka, aiheet from the
+        'Lisätiedot' (Additional Information) accordion section.
+        """
+        metadata = {}
+        
+        try:
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            # Find all dt/dd pairs (definition lists)
+            for dt in soup.find_all('dt'):
+                dd = dt.find_next_sibling('dd')
+                if dd:
+                    key = dt.get_text(strip=True)
+                    value = dd.get_text(strip=True)
+                    
+                    # Only store fields we're interested in
+                    if key in config.HTML_METADATA_FIELDS:
+                        metadata[key] = value
+                        logger.debug(f"Extracted metadata: {key} = {value[:50]}...")
+            
+        except Exception as e:
+            logger.error(f"Error parsing HTML metadata: {e}")
+        
+        return metadata
+    
+    async def fetch_product_metadata(self, handle: str) -> Dict[str, str]:
+        """Fetch and parse HTML metadata for a product."""
+        if not config.FETCH_HTML_METADATA:
+            return {}
+        
+        try:
+            url = f"{config.BASE_URL}/products/{handle}"
+            html = await self.fetch_html(url)
+            metadata = self.parse_html_metadata(html)
+            return metadata
+        except Exception as e:
+            logger.error(f"Error fetching HTML metadata for {handle}: {e}")
+            return {}
     
     async def fetch_collection_page(self, page: int) -> List[Dict]:
         """Fetch a single page from the collections API."""
@@ -157,7 +302,7 @@ class KirjaFiScraper:
         logger.info(f"Total products fetched: {len(all_products)}")
         return all_products
     
-    async def save_book_data(self, product: Dict) -> bool:
+    async def save_book_data(self, product: Dict, html_metadata: Dict[str, str] = None) -> bool:
         """Save book data to JSON file."""
         try:
             handle = product.get('handle', '')
@@ -165,12 +310,32 @@ class KirjaFiScraper:
                 logger.warning("Product missing handle, skipping")
                 return False
             
-            # Enrich product data with URLs
+            # Enrich product data with URLs and metadata
             product['_metadata'] = {
                 'fetched_at': datetime.now().isoformat(),
                 'product_url': f"{config.BASE_URL}/products/{handle}",
                 'api_url': f"{config.BASE_URL}/products/{handle}.json"
             }
+            
+            # Add HTML metadata if available
+            if html_metadata:
+                # Store with cleaner keys (English, lowercase, underscored)
+                metadata_mapping = {
+                    'Avainsanat': 'keywords',
+                    'Kirjastoluokka': 'library_classification',
+                    'Aiheet': 'topics',
+                    'Kustantaja': 'publisher_alt',
+                    'Julkaisu': 'publication_date',
+                    'Sidosasu': 'binding',
+                    'Sivumäärä': 'page_count',
+                    'Mitat': 'dimensions',
+                    'Paino': 'weight'
+                }
+                
+                product['_html_metadata'] = {}
+                for finnish_key, english_key in metadata_mapping.items():
+                    if finnish_key in html_metadata:
+                        product['_html_metadata'][english_key] = html_metadata[finnish_key]
             
             filepath = Path(config.BOOKS_DIR) / f"{handle}.json"
             
@@ -234,10 +399,17 @@ class KirjaFiScraper:
         return images_downloaded
     
     async def process_product(self, product: Dict) -> bool:
-        """Process a single product: save data and download images."""
+        """Process a single product: fetch HTML metadata, save data and download images."""
         try:
-            # Save book data
-            await self.save_book_data(product)
+            handle = product.get('handle', '')
+            
+            # Fetch HTML metadata if enabled
+            html_metadata = {}
+            if config.FETCH_HTML_METADATA and handle:
+                html_metadata = await self.fetch_product_metadata(handle)
+            
+            # Save book data with metadata
+            await self.save_book_data(product, html_metadata)
             
             # Download images
             await self.download_book_images(product)
@@ -317,6 +489,10 @@ class KirjaFiScraper:
             logger.info("Scraping completed!")
             logger.info(f"Books fetched: {self.stats['books_fetched']}")
             logger.info(f"Images downloaded: {self.stats['images_downloaded']}")
+            logger.info(f"HTML metadata extraction: {'Enabled' if config.FETCH_HTML_METADATA else 'Disabled'}")
+            if config.FETCH_HTML_METADATA:
+                logger.info(f"Rate limit hits (429): {self.stats['rate_limit_429']}")
+                logger.info(f"Final request delay: {self.rate_limit_delay:.2f}s")
             logger.info(f"Errors: {self.stats['errors']}")
             logger.info("=" * 60)
             

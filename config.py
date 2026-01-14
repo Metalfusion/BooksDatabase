@@ -6,9 +6,10 @@ COLLECTIONS_ENDPOINT = "/collections/all/products.json"
 PRODUCT_ENDPOINT = "/products/{handle}.json"
 
 # Concurrency Settings
-MAX_CONCURRENT_REQUESTS = 50  # Number of parallel requests
+MAX_CONCURRENT_REQUESTS = 20  # Number of parallel requests
 REQUEST_DELAY = 0.05  # Delay between requests in seconds (only for collection pages)
-SEMAPHORE_LIMIT = 100  # Maximum concurrent operations
+HTML_REQUEST_DELAY = 0.1  # Delay between HTML requests (higher to avoid 429 errors)
+SEMAPHORE_LIMIT = 20  # Maximum concurrent operations
 
 # Retry Settings
 MAX_RETRIES = 3
@@ -29,4 +30,17 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 
 # Image Settings
 DOWNLOAD_IMAGES = True
-IMAGE_MAX_WIDTH = 1200  # Resize images larger than this width
+
+# HTML Metadata Extraction Settings
+FETCH_HTML_METADATA = True  # Extract avainsanat, kirjastoluokka, aiheet from product pages
+HTML_METADATA_FIELDS = [
+    'Avainsanat',       # Keywords
+    'Kirjastoluokka',   # Library classification
+    'Aiheet',           # Topics/subjects
+    'Kustantaja',       # Publisher (alternative source)
+    'Julkaisu',         # Publication date
+    'Sidosasu',         # Binding type
+    'Sivumäärä',        # Page count
+    'Mitat',            # Dimensions
+    'Paino'             # Weight
+]

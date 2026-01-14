@@ -52,6 +52,7 @@ class ReportGenerator:
         """
         variants = book.get('variants', [])
         variant = variants[0] if variants else {}
+        html_metadata = book.get('_html_metadata', {})
         
         title = book.get('title', 'Unknown Title')
         isbn = variant.get('sku', 'N/A')
@@ -67,7 +68,21 @@ class ReportGenerator:
         if similarity is not None:
             card.append(f"**Relevance:** {similarity*100:.1f}%  ")
         
-        # Tags first (what the book is about)
+        # HTML Metadata fields (if available)
+        if html_metadata:
+            keywords = html_metadata.get('keywords', '')
+            if keywords:
+                card.append(f"**Keywords:** {keywords}  ")
+            
+            topics = html_metadata.get('topics', '')
+            if topics:
+                card.append(f"**Topics:** {topics}  ")
+            
+            lib_class = html_metadata.get('library_classification', '')
+            if lib_class:
+                card.append(f"**Classification:** {lib_class}  ")
+        
+        # Tags (what the book is about)
         tags = book.get('tags', [])
         if tags:
             # Filter out technical tags
@@ -77,7 +92,7 @@ class ReportGenerator:
                 tag_str = ', '.join([f'`{tag}`' for tag in content_tags[:10]])
                 if len(content_tags) > 10:
                     tag_str += f' (+{len(content_tags)-10} more)'
-                card.append(f"**Topics:** {tag_str}  ")
+                card.append(f"**Tags:** {tag_str}  ")
         
         # Description (what it's about)
         if show_description:
@@ -91,7 +106,26 @@ class ReportGenerator:
         
         # Technical details at bottom
         card.append(f"**Price:** {price} EUR | **Publisher:** {publisher} | **Type:** {ptype}  ")
-        card.append(f"**ISBN:** {isbn} | **Available:** {'✓ Yes' if available else '✗ No'}  ")
+        
+        # Additional metadata
+        details = []
+        details.append(f"**ISBN:** {isbn}")
+        details.append(f"**Available:** {'✓ Yes' if available else '✗ No'}")
+        
+        if html_metadata:
+            page_count = html_metadata.get('page_count', '')
+            if page_count:
+                details.append(f"**Pages:** {page_count}")
+            
+            binding = html_metadata.get('binding', '')
+            if binding:
+                details.append(f"**Binding:** {binding}")
+            
+            pub_date = html_metadata.get('publication_date', '')
+            if pub_date:
+                details.append(f"**Published:** {pub_date}")
+        
+        card.append(' | '.join(details) + '  ')
         
         # Link
         card.append(f"\n[View on kirja.fi]({url})\n")
