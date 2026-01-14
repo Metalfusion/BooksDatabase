@@ -1,9 +1,10 @@
 # Kirja.fi Books Database Scraper
 
-A robust async Python scraper for collecting book data from kirja.fi.
+A robust async Python scraper for collecting book data from kirja.fi, with advanced search tools.
 
 ## Features
 
+### Scraper
 - ✅ **Async I/O** for fast parallel downloads
 - ✅ **Automatic retry logic** with exponential backoff
 - ✅ **Parallelism control** to respect server limits
@@ -12,6 +13,16 @@ A robust async Python scraper for collecting book data from kirja.fi.
 - ✅ **Progress tracking** with batch updates every 10 products
 - ✅ **Comprehensive error handling** and logging
 - ✅ **Unicode support** for Finnish characters
+
+### Search Tools
+- 🔍 **Text Search** - Fast keyword search
+- 🧠 **Semantic Search** - AI-powered search that understands meaning
+- 🎯 **Advanced Filtering** - Filter by price, publisher, type, availability
+- 📊 **Statistics** - Database analytics and insights
+- 📝 **Markdown Reports** - Generate beautiful reports
+- 🎨 **Cross-platform CLI** - Works on Windows, Linux, and macOS
+
+See [search-tools/README.md](search-tools/README.md) for full search documentation.
 
 ## Quick Start
 
@@ -112,6 +123,42 @@ Edit `config.py` to adjust:
 - **Full scrape**: ~19 minutes for 6,591 books
 - **Bottleneck**: Network latency (~137ms per API call)
 - **Progress updates**: Every 10 products (20%, 40%, 60%...)
+
+## Utilities
+
+### Search Books
+```python
+from utils import search_books, load_all_books
+
+# Search by title
+results = search_books("kirja", field='title')
+## Search Tools
+
+For advanced searching and reporting, use the search tools:
+
+```bash
+cd search-tools
+
+# Install search tool dependencies
+pip install -r requirements.txt
+
+# Search books
+python search.py search "kirja"
+
+# AI semantic search
+python search.py semantic "books about Finnish history"
+
+# Filter by criteria
+python search.py filter --publisher WSOY --max-price 20
+
+# View statistics
+python search.py stats
+
+# Generate reports
+python search.py search "query" --output report.md
+```
+
+See [search-tools/README.md](search-tools/README.md) for complete documentation.
 
 ## Utilities
 
