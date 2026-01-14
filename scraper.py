@@ -79,10 +79,11 @@ class KirjaFiScraper:
         retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError)),
         reraise=True
     )
-    async def fetch_json(self, url: str) -> Dict:
+    async def fetch_json(self, url: str, with_delay: bool = True) -> Dict:
         """Fetch JSON data from URL with retry logic."""
         async with self.semaphore:
-            await asyncio.sleep(config.REQUEST_DELAY)
+            if with_delay:
+                await asyncio.sleep(config.REQUEST_DELAY)
             
             logger.debug(f"Fetching: {url}")
             async with self.session.get(url) as response:
@@ -102,8 +103,6 @@ class KirjaFiScraper:
             return True
         
         async with self.semaphore:
-            await asyncio.sleep(config.REQUEST_DELAY)
-            
             logger.debug(f"Downloading image: {url}")
             async with self.session.get(url) as response:
                 response.raise_for_status()
@@ -131,7 +130,7 @@ class KirjaFiScraper:
             self.stats['errors'] += 1
             return []
     
-    async def fetch_all_products(self) -> List[Dict]:
+    async def fetch_all_products(self, limit: int = None) -> List[Dict]:
         """Fetch all products from all pages."""
         logger.info("Starting to fetch all products...")
         all_products = []
@@ -146,6 +145,13 @@ class KirjaFiScraper:
                 break
             
             all_products.extend(products)
+            
+            # Check if we've reached the limit
+            if limit and len(all_products) >= limit:
+                logger.info(f"Reached limit of {limit} products")
+                all_products = all_products[:limit]
+                break
+            
             page += 1
         
         logger.info(f"Total products fetched: {len(all_products)}")
@@ -280,7 +286,8 @@ class KirjaFiScraper:
         
         try:
             # Fetch all products
-            products = await self.fetch_all_products()
+            TEST_LIMIT = 1000
+            products = await self.fetch_all_products(limit=TEST_LIMIT)
             
             if not products:
                 logger.warning("No products found!")
@@ -288,10 +295,10 @@ class KirjaFiScraper:
             
             # Process all products with progress bar and batch processing
             logger.info(f"Processing {len(products)} products...")
-            logger.info("This may take a while - progress will update every 10 products")
+            logger.info("This may take a while - progress will update every 100 products")
             
             # Process in batches to show progress
-            batch_size = 10
+            batch_size = 100
             for i in range(0, len(products), batch_size):
                 batch = products[i:i + batch_size]
                 tasks = [self.process_product(product) for product in batch]

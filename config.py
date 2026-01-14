@@ -6,9 +6,9 @@ COLLECTIONS_ENDPOINT = "/collections/all/products.json"
 PRODUCT_ENDPOINT = "/products/{handle}.json"
 
 # Concurrency Settings
-MAX_CONCURRENT_REQUESTS = 5  # Number of parallel requests
-REQUEST_DELAY = 0.05  # Delay between requests in seconds
-SEMAPHORE_LIMIT = 10  # Maximum concurrent operations
+MAX_CONCURRENT_REQUESTS = 50  # Number of parallel requests
+REQUEST_DELAY = 0.05  # Delay between requests in seconds (only for collection pages)
+SEMAPHORE_LIMIT = 100  # Maximum concurrent operations
 
 # Retry Settings
 MAX_RETRIES = 3

@@ -95,7 +95,7 @@ class BookSearcher:
             match_reasons = []
             
             # Check description (highest weight)
-            desc = book.get('body_html', '')
+            desc = book.get('body_html', '') or ''
             desc_lower = desc.lower()
             desc_matches = sum(1 for word in query_words if word in desc_lower)
             if desc_matches > 0:
