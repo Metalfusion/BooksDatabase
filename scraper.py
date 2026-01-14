@@ -5,6 +5,7 @@ Kirja.fi Books Scraper - Async implementation with retry logic and parallelism c
 import asyncio
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 from urllib.parse import urljoin, urlparse
@@ -21,6 +22,11 @@ from tenacity import (
 from tqdm.asyncio import tqdm_asyncio
 
 import config
+
+# Fix unicode output on Windows
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
 
 
 # Setup logging
@@ -280,12 +286,19 @@ class KirjaFiScraper:
                 logger.warning("No products found!")
                 return
             
-            # Process all products with progress bar
+            # Process all products with progress bar and batch processing
             logger.info(f"Processing {len(products)} products...")
-            tasks = [self.process_product(product) for product in products]
+            logger.info("This may take a while - progress will update every 10 products")
             
-            # Use tqdm for progress tracking
-            await tqdm_asyncio.gather(*tasks, desc="Processing books")
+            # Process in batches to show progress
+            batch_size = 10
+            for i in range(0, len(products), batch_size):
+                batch = products[i:i + batch_size]
+                tasks = [self.process_product(product) for product in batch]
+                await asyncio.gather(*tasks)
+                
+                processed = min(i + batch_size, len(products))
+                logger.info(f"Progress: {processed}/{len(products)} products processed ({processed*100//len(products)}%)")
             
             # Save metadata
             await self.save_metadata(products)
