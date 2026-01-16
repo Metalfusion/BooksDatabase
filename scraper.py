@@ -5,6 +5,7 @@ Kirja.fi Books Scraper - Async implementation with retry logic and parallelism c
 import asyncio
 import json
 import logging
+import random
 import re
 import sys
 from pathlib import Path
@@ -56,6 +57,7 @@ class KirjaFiScraper:
             'images_downloaded': 0,
             'errors': 0,
             'rate_limit_429': 0,
+            'skipped_books': 0,  # Books already fetched (auto-resume)
             'start_time': None,
             'end_time': None
         }
@@ -114,11 +116,16 @@ class KirjaFiScraper:
                             self.stats['rate_limit_429'] += 1
                             
                             retry_after = response.headers.get('Retry-After')
-                            wait_time = float(retry_after) if retry_after else self.rate_limit_delay * (attempt + 1)
+                            base_wait = float(retry_after) if retry_after else self.rate_limit_delay * (attempt + 1)
+                            
+                            # Add jitter (±25%) to prevent thundering herd effect
+                            jitter = random.uniform(0.75, 1.25)
+                            wait_time = base_wait * jitter
                             
                             logger.warning(
                                 f"Rate limit hit (429) for {url}. "
-                                f"Waiting {wait_time:.1f}s before retry {attempt + 1}/{max_retries}. "
+                                f"Waiting {wait_time:.1f}s (base: {base_wait:.1f}s, jitter: {jitter:.2f}) "
+                                f"before retry {attempt + 1}/{max_retries}. "
                                 f"New base delay: {self.rate_limit_delay:.2f}s"
                             )
                             await asyncio.sleep(wait_time)
@@ -164,11 +171,16 @@ class KirjaFiScraper:
                             self.stats['rate_limit_429'] += 1
                             
                             retry_after = response.headers.get('Retry-After')
-                            wait_time = float(retry_after) if retry_after else self.rate_limit_delay * (attempt + 1)
+                            base_wait = float(retry_after) if retry_after else self.rate_limit_delay * (attempt + 1)
+                            
+                            # Add jitter (±25%) to prevent thundering herd effect
+                            jitter = random.uniform(0.75, 1.25)
+                            wait_time = base_wait * jitter
                             
                             logger.warning(
                                 f"Rate limit hit (429) for {url}. "
-                                f"Waiting {wait_time:.1f}s before retry {attempt + 1}/{max_retries}. "
+                                f"Waiting {wait_time:.1f}s (base: {base_wait:.1f}s, jitter: {jitter:.2f}) "
+                                f"before retry {attempt + 1}/{max_retries}. "
                                 f"New base delay: {self.rate_limit_delay:.2f}s"
                             )
                             await asyncio.sleep(wait_time)
@@ -483,10 +495,25 @@ class KirjaFiScraper:
         
         return images_downloaded
     
-    async def process_product(self, product: Dict) -> bool:
-        """Process a single product: fetch HTML metadata, save data and download images."""
+    async def process_product(self, product: Dict, skip_existing: bool = True) -> bool:
+        """Process a single product: fetch HTML metadata, save data and download images.
+        
+        Args:
+            product: Product data dictionary
+            skip_existing: If True, skip products that already have saved JSON files (default: True)
+        """
         try:
             handle = product.get('handle', '')
+            if not handle:
+                logger.warning("Product missing handle, skipping")
+                return False
+            
+            # Auto-resume: Check if book file already exists
+            book_filepath = Path(config.BOOKS_DIR) / f"{handle}.json"
+            if skip_existing and book_filepath.exists():
+                logger.debug(f"Book already exists, skipping: {handle}")
+                self.stats['skipped_books'] += 1
+                return True
             
             # Fetch HTML metadata if enabled
             html_metadata = {}
@@ -572,6 +599,8 @@ class KirjaFiScraper:
             logger.info("=" * 60)
             logger.info("Scraping completed!")
             logger.info(f"Books fetched: {self.stats['books_fetched']}")
+            logger.info(f"Books skipped (already exist): {self.stats['skipped_books']}")
+            logger.info(f"Total processed: {self.stats['books_fetched'] + self.stats['skipped_books']}")
             logger.info(f"Images downloaded: {self.stats['images_downloaded']}")
             logger.info(f"HTML metadata extraction: {'Enabled' if config.FETCH_HTML_METADATA else 'Disabled'}")
             if config.FETCH_HTML_METADATA:
