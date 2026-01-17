@@ -7,6 +7,7 @@ import json
 import logging
 import random
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -52,12 +53,15 @@ class KirjaFiScraper:
         self.semaphore = asyncio.Semaphore(config.SEMAPHORE_LIMIT)
         self.rate_limit_delay = config.HTML_REQUEST_DELAY  # Adaptive delay for HTML requests
         self.rate_limit_hits = 0  # Track consecutive 429 errors
+        self.ip_hop_task = None  # Background task for IP hopping
+        self.last_ip_change = None  # Timestamp of last IP change
         self.stats = {
             'books_fetched': 0,
             'images_downloaded': 0,
             'errors': 0,
             'rate_limit_429': 0,
             'skipped_books': 0,  # Books already fetched (auto-resume)
+            'ip_changes': 0,  # Number of IP hops performed
             'start_time': None,
             'end_time': None
         }
@@ -94,8 +98,124 @@ class KirjaFiScraper:
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
+        # Stop IP hopping task if running
+        if self.ip_hop_task and not self.ip_hop_task.done():
+            self.ip_hop_task.cancel()
+            try:
+                await self.ip_hop_task
+            except asyncio.CancelledError:
+                pass
+        
         if self.session:
             await self.session.close()
+    
+    def nordvpn_connect(self, country: str = None) -> bool:
+        """Connect to NordVPN using CLI.
+        
+        Args:
+            country: Optional country name to connect to (e.g., "United States")
+        
+        Returns:
+            True if connection successful, False otherwise
+        """
+        try:
+            if not Path(config.NORDVPN_PATH).exists():
+                logger.error(f"NordVPN executable not found at: {config.NORDVPN_PATH}")
+                return False
+            
+            # Build command
+            if country:
+                cmd = [config.NORDVPN_PATH, "-c", "-g", country]
+            else:
+                cmd = [config.NORDVPN_PATH, "-c"]
+            
+            logger.info(f"Connecting to NordVPN...{' (country: ' + country + ')' if country else ''}")
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                logger.info("Successfully connected to NordVPN")
+                self.stats['ip_changes'] += 1
+                self.last_ip_change = datetime.now()
+                return True
+            else:
+                logger.error(f"NordVPN connection failed: {result.stderr}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            logger.error("NordVPN connection timed out")
+            return False
+        except Exception as e:
+            logger.error(f"Error connecting to NordVPN: {e}")
+            return False
+    
+    def nordvpn_disconnect(self) -> bool:
+        """Disconnect from NordVPN using CLI.
+        
+        Returns:
+            True if disconnection successful, False otherwise
+        """
+        try:
+            if not Path(config.NORDVPN_PATH).exists():
+                logger.error(f"NordVPN executable not found at: {config.NORDVPN_PATH}")
+                return False
+            
+            logger.debug("Disconnecting from NordVPN...")
+            
+            result = subprocess.run(
+                [config.NORDVPN_PATH, "-d"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                logger.debug("Disconnected from NordVPN")
+                return True
+            else:
+                logger.warning(f"NordVPN disconnection warning: {result.stderr}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            logger.error("NordVPN disconnection timed out")
+            return False
+        except Exception as e:
+            logger.error(f"Error disconnecting from NordVPN: {e}")
+            return False
+    
+    async def ip_hopping_loop(self):
+        """Background task that periodically reconnects to NordVPN to change IP."""
+        logger.info(f"IP hopping enabled - will change IP every {config.IP_HOP_INTERVAL} seconds")
+        
+        # Initial connection
+        if config.NORDVPN_COUNTRY:
+            self.nordvpn_connect(config.NORDVPN_COUNTRY)
+        else:
+            self.nordvpn_connect()
+        
+        try:
+            while True:
+                await asyncio.sleep(config.IP_HOP_INTERVAL)
+                
+                logger.info("IP hop cycle triggered - reconnecting to NordVPN...")
+                
+                # Disconnect and reconnect
+                self.nordvpn_disconnect()
+                await asyncio.sleep(2)  # Wait a bit before reconnecting
+                
+                if config.NORDVPN_COUNTRY:
+                    self.nordvpn_connect(config.NORDVPN_COUNTRY)
+                else:
+                    self.nordvpn_connect()
+                
+        except asyncio.CancelledError:
+            logger.info("IP hopping task cancelled")
+            raise
     
     async def fetch_json(self, url: str, with_delay: bool = True) -> Dict:
         """Fetch JSON data from URL with adaptive rate limiting."""
@@ -153,7 +273,7 @@ class KirjaFiScraper:
     
     async def fetch_html(self, url: str, with_delay: bool = True) -> str:
         """Fetch HTML content from URL with adaptive rate limiting."""
-        max_retries = config.MAX_RETRIES + 2  # Extra retries for 429 errors
+        max_retries = config.MAX_RETRIES + config.HTML_FETCH_RETRIES  # Extra retries for HTML fetching
         
         for attempt in range(max_retries):
             try:
@@ -511,9 +631,25 @@ class KirjaFiScraper:
             # Auto-resume: Check if book file already exists
             book_filepath = Path(config.BOOKS_DIR) / f"{handle}.json"
             if skip_existing and book_filepath.exists():
-                logger.debug(f"Book already exists, skipping: {handle}")
-                self.stats['skipped_books'] += 1
-                return True
+                # If HTML metadata fetching is enabled, check if the existing file has it
+                if config.FETCH_HTML_METADATA:
+                    try:
+                        async with aiofiles.open(book_filepath, 'r', encoding='utf-8') as f:
+                            existing_data = json.loads(await f.read())
+                            # If HTML metadata is missing, re-fetch the book
+                            if '_html_metadata' not in existing_data or not existing_data['_html_metadata']:
+                                logger.debug(f"Book exists but missing HTML metadata, re-fetching: {handle}")
+                            else:
+                                logger.debug(f"Book already exists with HTML metadata, skipping: {handle}")
+                                self.stats['skipped_books'] += 1
+                                return True
+                    except Exception as e:
+                        logger.warning(f"Error checking existing book {handle}: {e}. Re-fetching...")
+                else:
+                    # HTML fetching disabled, skip if file exists
+                    logger.debug(f"Book already exists, skipping: {handle}")
+                    self.stats['skipped_books'] += 1
+                    return True
             
             # Fetch HTML metadata if enabled
             html_metadata = {}
@@ -568,6 +704,13 @@ class KirjaFiScraper:
         logger.info("Starting Kirja.fi scraper")
         logger.info("=" * 60)
         
+        # Start IP hopping if enabled
+        if config.ENABLE_IP_HOPPING:
+            logger.info(f"IP hopping enabled: {config.IP_HOP_INTERVAL}s interval")
+            self.ip_hop_task = asyncio.create_task(self.ip_hopping_loop())
+        else:
+            logger.info("IP hopping disabled")
+        
         try:
             # Fetch all products
             products = await self.fetch_all_products(limit=config.TEST_LIMIT)
@@ -606,6 +749,8 @@ class KirjaFiScraper:
             if config.FETCH_HTML_METADATA:
                 logger.info(f"Rate limit hits (429): {self.stats['rate_limit_429']}")
                 logger.info(f"Final request delay: {self.rate_limit_delay:.2f}s")
+            if config.ENABLE_IP_HOPPING:
+                logger.info(f"IP changes: {self.stats['ip_changes']}")
             logger.info(f"Errors: {self.stats['errors']}")
             logger.info("=" * 60)
             
